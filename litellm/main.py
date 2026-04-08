@@ -221,6 +221,7 @@ from .llms.sagemaker.completion.handler import SagemakerLLM
 from .llms.sap.chat.handler import GenAIHubOrchestration
 from .llms.vertex_ai import vertex_ai_non_gemini
 from .llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import VertexLLM
+from .llms.vertex_ai.sk_endpoint.handler import sk_vertex_ai_chat_completion
 from .llms.vertex_ai.gemini_embeddings.batch_embed_content_handler import (
     GoogleBatchEmbeddings,
 )
@@ -3456,6 +3457,57 @@ def completion(  # type: ignore # noqa: PLR0915
                 acompletion=acompletion,
                 timeout=timeout,
                 custom_llm_provider=custom_llm_provider,  # type: ignore
+                client=client,
+                api_base=api_base,
+                extra_headers=headers,
+            )
+
+        elif custom_llm_provider == "sk_vertex_ai":
+            vertex_ai_project = (
+                optional_params.pop("vertex_project", None)
+                or optional_params.pop("vertex_ai_project", None)
+                or litellm.vertex_project
+                or get_secret("VERTEXAI_PROJECT")
+                or get_secret("SK_VERTEX_AI_PROJECT")
+            )
+            vertex_ai_location = (
+                optional_params.pop("vertex_location", None)
+                or optional_params.pop("vertex_ai_location", None)
+                or litellm.vertex_location
+                or get_secret("VERTEXAI_LOCATION")
+                or get_secret("SK_VERTEX_AI_LOCATION")
+            )
+
+            sk_api_key = (
+                api_key
+                or get_secret("SK_VERTEX_AI_API_KEY")
+                or litellm.api_key
+            )
+
+            api_base = (
+                api_base
+                or litellm.api_base
+                or get_secret("SK_VERTEX_AI_API_BASE")
+            )
+
+            new_params = safe_deep_copy(optional_params or {})
+            response = sk_vertex_ai_chat_completion.completion(  # type: ignore
+                model=model,
+                messages=messages,
+                model_response=model_response,
+                print_verbose=print_verbose,
+                optional_params=new_params,
+                litellm_params=litellm_params,  # type: ignore
+                logger_fn=logger_fn,
+                encoding=_get_encoding(),
+                vertex_location=vertex_ai_location,
+                vertex_project=vertex_ai_project,
+                vertex_credentials=None,
+                gemini_api_key=sk_api_key,
+                logging_obj=logging,
+                acompletion=acompletion,
+                timeout=timeout,
+                custom_llm_provider=custom_llm_provider,
                 client=client,
                 api_base=api_base,
                 extra_headers=headers,

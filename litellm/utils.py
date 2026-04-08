@@ -3106,6 +3106,7 @@ def get_optional_params_image_gen(
             k.startswith("vertex_")
             and custom_llm_provider != "vertex_ai"
             and custom_llm_provider != "vertex_ai_beta"
+            and custom_llm_provider != "sk_vertex_ai"
         ):  # allow dynamically setting vertex ai init logic
             continue
         passed_params[k] = v
@@ -3685,6 +3686,7 @@ class PreProcessNonDefaultParams:
                 k.startswith("vertex_")
                 and custom_llm_provider != "vertex_ai"
                 and custom_llm_provider != "vertex_ai_beta"
+                and custom_llm_provider != "sk_vertex_ai"
             ):  # allow dynamically setting vertex ai init logic
                 continue
             passed_params[k] = v
@@ -4188,7 +4190,7 @@ def get_optional_params(  # noqa: PLR0915
         )
     elif custom_llm_provider == "vertex_ai_beta" or (
         custom_llm_provider == "vertex_ai" and "gemini" in model
-    ):
+    ) or custom_llm_provider == "sk_vertex_ai":
         optional_params = litellm.VertexGeminiConfig().map_openai_params(
             non_default_params=non_default_params,
             optional_params=optional_params,
