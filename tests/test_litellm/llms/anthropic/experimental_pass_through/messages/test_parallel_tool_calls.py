@@ -279,6 +279,7 @@ def test_anthropic_stream_wrapper_interleaved_tool_calls_and_text():
         "content_block_delta",  # "NY"}
         "content_block_stop",  # End of first tool_use content block
         "content_block_start",  # "The weather is nice today"
+        "content_block_delta",
         "content_block_stop",
         "content_block_start",  # Start of second tool_use content block
         "content_block_delta",  # {"city":
@@ -289,6 +290,7 @@ def test_anthropic_stream_wrapper_interleaved_tool_calls_and_text():
         "content_block_delta",  # " CHI"}
         "content_block_stop",  # End of third tool_use content block
         "content_block_start",  # "The weather is not so nice today"
+        "content_block_delta",
         "content_block_stop",
         "message_delta",  # Stop reason with merged usage
         "message_stop",  # Final message stop

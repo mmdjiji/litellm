@@ -128,9 +128,6 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 )
 
                 if should_start_new_block and not self.sent_content_block_finish:
-                    # Queue the sequence: content_block_stop -> content_block_start
-                    # The trigger chunk itself is not emitted as a delta since the
-                    # content_block_start already carries the relevant information.
                     self.chunk_queue.append(
                         {
                             "type": "content_block_stop",
@@ -144,11 +141,13 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                             "content_block": self.current_content_block_start,
                         }
                     )
-                    self.sent_content_block_finish = False
+                    if self._should_emit_processed_chunk(processed_chunk):
+                        self.chunk_queue.append(processed_chunk)
                     return self.chunk_queue.popleft()
 
                 if (
                     processed_chunk["type"] == "message_delta"
+                    and self.sent_content_block_start
                     and self.sent_content_block_finish is False
                 ):
                     # Queue both the content_block_stop and the message_delta
@@ -166,8 +165,10 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                     self.chunk_queue.append(processed_chunk)
                     self.holding_chunk = None
                     return self.chunk_queue.popleft()
-                else:
+                elif self._should_emit_processed_chunk(processed_chunk):
                     self.chunk_queue.append(processed_chunk)
+                    return self.chunk_queue.popleft()
+                elif self.chunk_queue:
                     return self.chunk_queue.popleft()
 
             # Handle any remaining held chunks after stream ends
@@ -239,7 +240,6 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 if chunk == "None" or chunk is None:
                     raise Exception
 
-                # Check if we need to start a new content block
                 should_start_new_block = self._should_start_new_content_block(chunk)
                 if should_start_new_block:
                     self._increment_content_block_index()
@@ -300,23 +300,14 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                     self.holding_stop_reason_chunk = None
                     return self.chunk_queue.popleft()
 
-                # Check if this processed chunk has a stop_reason - hold it for next chunk
-
                 if not self.queued_usage_chunk:
                     if should_start_new_block and not self.sent_content_block_finish:
-                        # Queue the sequence: content_block_stop -> content_block_start
-                        # The trigger chunk itself is not emitted as a delta since the
-                        # content_block_start already carries the relevant information.
-
-                        # 1. Stop current content block
                         self.chunk_queue.append(
                             {
                                 "type": "content_block_stop",
                                 "index": max(self.current_content_block_index - 1, 0),
                             }
                         )
-
-                        # 2. Start new content block
                         self.chunk_queue.append(
                             {
                                 "type": "content_block_start",
@@ -324,15 +315,13 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                                 "content_block": self.current_content_block_start,
                             }
                         )
-
-                        # Reset state for new block
-                        self.sent_content_block_finish = False
-
-                        # Return the first queued item
+                        if self._should_emit_processed_chunk(processed_chunk):
+                            self.chunk_queue.append(processed_chunk)
                         return self.chunk_queue.popleft()
 
                     if (
                         processed_chunk["type"] == "message_delta"
+                        and self.sent_content_block_start
                         and self.sent_content_block_finish is False
                     ):
                         # Queue both the content_block_stop and the holding chunk
@@ -357,9 +346,11 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                         self.chunk_queue.append(processed_chunk)
                         self.holding_chunk = None
                         return self.chunk_queue.popleft()
-                    else:
+                    elif self._should_emit_processed_chunk(processed_chunk):
                         # Queue the current chunk
                         self.chunk_queue.append(processed_chunk)
+                        return self.chunk_queue.popleft()
+                    elif self.chunk_queue:
                         return self.chunk_queue.popleft()
 
             # Handle any remaining held chunks after stream ends
@@ -426,6 +417,26 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
 
     def _increment_content_block_index(self):
         self.current_content_block_index += 1
+
+    @staticmethod
+    def _should_emit_processed_chunk(processed_chunk: Dict[str, Any]) -> bool:
+        if processed_chunk.get("type") != "content_block_delta":
+            return True
+
+        delta = processed_chunk.get("delta", {})
+        delta_type = delta.get("type")
+
+        if delta_type == "text_delta":
+            return bool(delta.get("text"))
+        if delta_type == "thinking_delta":
+            return bool(delta.get("thinking"))
+        if delta_type == "input_json_delta":
+            partial_json = delta.get("partial_json")
+            return partial_json not in (None, "")
+        if delta_type == "signature_delta":
+            return bool(delta.get("signature"))
+
+        return True
 
     def _should_start_new_content_block(self, chunk: "ModelResponseStream") -> bool:
         """
