@@ -4,8 +4,8 @@ on:
   push:
     branches:
       - stable
-    tags:
-      - "v*"
+      - 'feat/*'
+      - 'fix/*'
 
 env:
   REGISTRY: ghcr.io
@@ -36,6 +36,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=stable,enable=${{ github.ref == 'refs/heads/stable' }}
+            type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/feat/') || startsWith(github.ref, 'refs/heads/fix/') }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
