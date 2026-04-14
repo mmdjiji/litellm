@@ -3,15 +3,19 @@ import os
 import sys
 
 import pytest
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.abspath("../../../../.."))
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from litellm.anthropic_interface import messages
-from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
-from litellm.types.utils import Delta, ModelResponse, StreamingChoices
+from litellm.types.utils import (
+    Delta,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+    Usage,
+)
 
 
 def test_anthropic_experimental_pass_through_messages_handler():
@@ -31,8 +35,8 @@ def test_anthropic_experimental_pass_through_messages_handler():
                 model="openai/claude-3-5-sonnet-20240620",
                 api_key="test-api-key",
             )
-        except (ValueError, TypeError, AttributeError) as e:
-            print(f"Error: {e}")
+        except (ValueError, TypeError, AttributeError):
+            pass
         mock_responses.assert_called_once()
         assert mock_responses.call_args.kwargs["api_key"] == "test-api-key"
 
@@ -56,8 +60,8 @@ def test_anthropic_experimental_pass_through_messages_handler_dynamic_api_key_an
                 api_base="test-api-base",
                 custom_key="custom_value",
             )
-        except (ValueError, TypeError, AttributeError) as e:
-            print(f"Error: {e}")
+        except (ValueError, TypeError, AttributeError):
+            pass
         mock_completion.assert_called_once()
         assert mock_completion.call_args.kwargs["api_key"] == "test-api-key"
         assert mock_completion.call_args.kwargs["api_base"] == "test-api-base"
@@ -81,8 +85,8 @@ def test_anthropic_experimental_pass_through_messages_handler_custom_llm_provide
                 custom_llm_provider="my-custom-llm",
                 api_key="test-api-key",
             )
-        except (ValueError, TypeError, AttributeError) as e:
-            print(f"Error: {e}")
+        except (ValueError, TypeError, AttributeError):
+            pass
 
         # Assert that litellm.completion was called when using a custom LLM provider
         mock_completion.assert_called_once()
@@ -133,10 +137,6 @@ async def test_bedrock_converse_budget_tokens_preserved():
         mock_acompletion.assert_called_once()
 
         call_kwargs = mock_acompletion.call_args.kwargs
-        print(
-            "acompletion call kwargs: ", json.dumps(call_kwargs, indent=4, default=str)
-        )
-
         # Verify thinking parameter is passed through with budget_tokens preserved
         thinking_param = call_kwargs.get("thinking")
         assert (
@@ -171,8 +171,8 @@ def test_openai_model_with_thinking_converts_to_reasoning():
                 api_key="test-api-key",
                 thinking={"type": "enabled", "budget_tokens": 1024},
             )
-        except (ValueError, TypeError, AttributeError) as e:
-            print(f"Error: {e}")
+        except (ValueError, TypeError, AttributeError):
+            pass
 
         mock_responses.assert_called_once()
 
@@ -498,4 +498,158 @@ class TestThinkingSummaryPreservation:
         )
         assert result == {
             "reasoning_effort": {"effort": "medium", "summary": "concise"}
+        }
+
+
+@pytest.mark.asyncio
+async def test_non_anthropic_streaming_thinking_request_and_response_round_trip():
+    """
+    End-to-end for the Anthropic compatibility layer:
+    - request side: assistant thinking blocks are forwarded into LiteLLM completion kwargs
+    - response side: the first streamed block is emitted as `thinking`, with its first delta preserved
+    """
+
+    class MockThinkingThenTextStream:
+        def __init__(self):
+            self.responses = [
+                ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            delta=Delta(content="Preface."),
+                            index=0,
+                            finish_reason=None,
+                        )
+                    ],
+                ),
+                ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            delta=Delta(
+                                reasoning_content="Let me reason this through.",
+                                thinking_blocks=[
+                                    {
+                                        "type": "thinking",
+                                        "thinking": "Let me reason this through.",
+                                        "signature": None,
+                                    }
+                                ],
+                                content="",
+                                role="assistant",
+                            ),
+                            index=0,
+                            finish_reason=None,
+                        )
+                    ],
+                ),
+                ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            delta=Delta(content="Here is the final answer."),
+                            index=0,
+                            finish_reason=None,
+                        )
+                    ],
+                ),
+                ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            delta=Delta(content=""),
+                            index=0,
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=Usage(prompt_tokens=33, completion_tokens=11, total_tokens=44),
+                ),
+            ]
+            self.index = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.index >= len(self.responses):
+                raise StopAsyncIteration
+            response = self.responses[self.index]
+            self.index += 1
+            return response
+
+    with patch("litellm.acompletion", new_callable=AsyncMock) as mock_acompletion:
+        mock_acompletion.return_value = MockThinkingThenTextStream()
+
+        stream = await messages.acreate(
+            max_tokens=256,
+            model="openrouter/deepseek-r1",
+            stream=True,
+            thinking={"type": "enabled", "budget_tokens": 5000},
+            messages=[
+                {"role": "user", "content": "Think carefully before answering."},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "I should reason step by step.",
+                            "signature": "sig-prev",
+                        },
+                        {"type": "text", "text": "I need one more detail."},
+                    ],
+                },
+                {"role": "user", "content": "Continue."},
+            ],
+        )
+
+        events = []
+        async for chunk in stream:
+            chunk_str = chunk.decode("utf-8")
+            lines = [line for line in chunk_str.splitlines() if line]
+            assert lines[0].startswith("event: ")
+            assert lines[1].startswith("data: ")
+            events.append(json.loads(lines[1][len("data: ") :]))
+
+        call_kwargs = mock_acompletion.call_args.kwargs
+        assistant_messages = [
+            message
+            for message in call_kwargs["messages"]
+            if message["role"] == "assistant"
+        ]
+
+        assert call_kwargs["reasoning_effort"] == "medium"
+        assert assistant_messages, "Expected translated assistant messages in request"
+        assert assistant_messages[0]["thinking_blocks"] == [
+            {
+                "type": "thinking",
+                "thinking": "I should reason step by step.",
+                "signature": "sig-prev",
+                "cache_control": {},
+            }
+        ]
+
+        assert [event["type"] for event in events] == [
+            "message_start",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "content_block_start",
+            "content_block_delta",
+            "content_block_stop",
+            "message_delta",
+            "message_stop",
+        ]
+        assert events[1]["content_block"]["type"] == "text"
+        assert events[2]["delta"] == {
+            "type": "text_delta",
+            "text": "Preface.",
+        }
+        assert events[4]["content_block"]["type"] == "thinking"
+        assert events[5]["delta"] == {
+            "type": "thinking_delta",
+            "thinking": "Let me reason this through.",
+        }
+        assert events[7]["content_block"]["type"] == "text"
+        assert events[8]["delta"] == {
+            "type": "text_delta",
+            "text": "Here is the final answer.",
         }
