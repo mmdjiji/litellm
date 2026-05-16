@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - stable
+      - 'v*'
       - 'feat/*'
       - 'fix/*'
   workflow_dispatch:
@@ -30,6 +31,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract version from branch name
+        id: version
+        run: |
+          REF="${{ github.ref_name }}"
+          if [[ "$REF" == v* ]]; then
+            echo "tag=${REF#v}" >> "$GITHUB_OUTPUT"
+            echo "is_version=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_version=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -37,6 +49,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=stable,enable=${{ github.ref == 'refs/heads/stable' }}
+            type=raw,value=${{ steps.version.outputs.tag }},enable=${{ steps.version.outputs.is_version == 'true' }}
             type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/feat/') || startsWith(github.ref, 'refs/heads/fix/') }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
