@@ -2,14 +2,13 @@ import os
 import sys
 
 import pytest
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.abspath("../../../../.."))
 
 from litellm.llms.anthropic.experimental_pass_through.adapters.streaming_iterator import (
     AnthropicStreamWrapper,
 )
-from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices, Usage
 
 
 # Create a simple test
@@ -139,9 +138,11 @@ async def test_async_anthropic_sse_wrapper():
 
     # Get the first chunk from the async SSE wrapper
     first_chunk = None
-    async for chunk in wrapper.async_anthropic_sse_wrapper():
-        first_chunk = chunk
-        break
+    sse_stream = wrapper.async_anthropic_sse_wrapper()
+    try:
+        first_chunk = await anext(sse_stream)
+    finally:
+        await sse_stream.aclose()
 
     # Verify it's bytes and properly formatted
     assert first_chunk is not None
@@ -150,3 +151,101 @@ async def test_async_anthropic_sse_wrapper():
     chunk_str = first_chunk.decode("utf-8")
     assert "event: message_start" in chunk_str
     assert '"type": "message_start"' in chunk_str
+
+
+def test_anthropic_stream_wrapper_preserves_trigger_delta_on_block_transition():
+    """The trigger delta on text -> thinking -> text transitions should not be dropped."""
+
+    class MockTransitionStream:
+        def __init__(self):
+            self.responses = [
+                ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            delta=Delta(content="Lead text"),
+                            index=0,
+                            finish_reason=None,
+                        )
+                    ],
+                ),
+                ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            delta=Delta(
+                                reasoning_content="Thinking through the answer",
+                                thinking_blocks=[
+                                    {
+                                        "type": "thinking",
+                                        "thinking": "Thinking through the answer",
+                                        "signature": None,
+                                    }
+                                ],
+                                content="",
+                                role="assistant",
+                            ),
+                            index=0,
+                            finish_reason=None,
+                        )
+                    ],
+                ),
+                ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            delta=Delta(content="Final answer"),
+                            index=0,
+                            finish_reason=None,
+                        )
+                    ],
+                ),
+                ModelResponseStream(
+                    choices=[
+                        StreamingChoices(
+                            delta=Delta(content=""),
+                            index=0,
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=Usage(prompt_tokens=12, completion_tokens=7, total_tokens=19),
+                ),
+            ]
+            self.index = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.index >= len(self.responses):
+                raise StopIteration
+            response = self.responses[self.index]
+            self.index += 1
+            return response
+
+    wrapper = AnthropicStreamWrapper(
+        completion_stream=MockTransitionStream(), model="claude-compatible"
+    )
+
+    chunks = list(wrapper)
+
+    assert [chunk["type"] for chunk in chunks] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert chunks[1]["content_block"]["type"] == "text"
+    assert chunks[2]["delta"] == {"type": "text_delta", "text": "Lead text"}
+    assert chunks[4]["content_block"]["type"] == "thinking"
+    assert chunks[5]["delta"] == {
+        "type": "thinking_delta",
+        "thinking": "Thinking through the answer",
+    }
+    assert chunks[7]["content_block"]["type"] == "text"
+    assert chunks[8]["delta"] == {"type": "text_delta", "text": "Final answer"}
