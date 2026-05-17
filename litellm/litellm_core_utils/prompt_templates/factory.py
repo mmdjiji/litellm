@@ -4695,16 +4695,21 @@ class BedrockConverseMessagesProcessor:
     ) -> List[BedrockContentBlock]:
         reasoning_content_blocks: List[BedrockContentBlock] = []
         for thinking_block in thinking_blocks:
-            reasoning_text = thinking_block.get("thinking")
-            reasoning_signature = thinking_block.get("signature")
-            text_block = BedrockConverseReasoningTextBlock(
-                text=reasoning_text or "",
-            )
-            if reasoning_signature is not None:
-                text_block["signature"] = reasoning_signature
-            reasoning_content_block = BedrockConverseReasoningContentBlock(
-                reasoningText=text_block,
-            )
+            if thinking_block.get("type") == "redacted_thinking":
+                reasoning_content_block = BedrockConverseReasoningContentBlock(
+                    redactedContent=thinking_block.get("data") or "",
+                )
+            else:
+                reasoning_text = thinking_block.get("thinking")
+                reasoning_signature = thinking_block.get("signature")
+                text_block = BedrockConverseReasoningTextBlock(
+                    text=reasoning_text or "",
+                )
+                if reasoning_signature is not None:
+                    text_block["signature"] = reasoning_signature
+                reasoning_content_block = BedrockConverseReasoningContentBlock(
+                    reasoningText=text_block,
+                )
             bedrock_content_block = BedrockContentBlock(
                 reasoningContent=reasoning_content_block
             )
@@ -4766,6 +4771,9 @@ class BedrockConverseMessagesProcessor:
         filtered_thinking_blocks = []
         for block in thinking_blocks:
             reasoning_content = block.get("reasoningContent", None)
+            if reasoning_content is not None and "redactedContent" in reasoning_content:
+                filtered_thinking_blocks.append(block)
+                continue
             reasoning_text = (
                 reasoning_content.get("reasoningText", None)
                 if reasoning_content is not None
@@ -4773,8 +4781,9 @@ class BedrockConverseMessagesProcessor:
             )
             if reasoning_text and not reasoning_text.get("signature"):
                 reasoning_text_text = reasoning_text["text"]
-                assistants_part = BedrockContentBlock(text=reasoning_text_text)
-                assistant_parts.append(assistants_part)
+                if reasoning_text_text.strip():
+                    assistants_part = BedrockContentBlock(text=reasoning_text_text)
+                    assistant_parts.append(assistants_part)
             else:
                 filtered_thinking_blocks.append(block)
         if len(filtered_thinking_blocks) > 0:
