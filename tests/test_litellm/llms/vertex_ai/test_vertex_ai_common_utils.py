@@ -288,6 +288,16 @@ def test_process_items_basic():
     process_items(schema)
     assert schema["properties"]["nested"]["items"] == {"type": "object"}
 
+    # Test array-typed schema missing items entirely (e.g. array-of-arrays
+    # where the inner array has no items) - Gemini requires items on arrays
+    schema = {"type": "array", "items": {"type": "array"}}
+    process_items(schema)
+    assert schema["items"]["items"] == {"type": "object"}
+
+    schema = {"type": "array"}
+    process_items(schema)
+    assert schema["items"] == {"type": "object"}
+
 
 def test_vertex_ai_complex_response_schema():
     import json
