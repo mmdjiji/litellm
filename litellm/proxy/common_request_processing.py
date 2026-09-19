@@ -769,9 +769,28 @@ class ProxyBaseLLMRequestProcessing:
                 self.data["router_settings_override"] = router_settings
 
         if "messages" in self.data and self.data["messages"]:
+            self._convert_trailing_system_message_to_user(self.data)
             logging_obj.update_messages(self.data["messages"])
 
         return self.data, logging_obj
+
+    @staticmethod
+    def _convert_trailing_system_message_to_user(data: dict) -> None:
+        """
+        Some upstream providers reject requests where the last message has
+        role="system". Convert a trailing system message to role="user".
+        """
+        messages = data.get("messages")
+        if (
+            isinstance(messages, list)
+            and len(messages) > 0
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "system"
+        ):
+            verbose_proxy_logger.debug(
+                "Last message has role='system'; converting to role='user' for upstream compatibility."
+            )
+            messages[-1]["role"] = "user"
 
     @staticmethod
     def _get_model_id_from_response(hidden_params: dict, data: dict) -> str:
