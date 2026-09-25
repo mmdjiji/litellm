@@ -1749,3 +1749,52 @@ class TestHasAttributeErrorInChain:
         exc_a.__context__ = exc_b
         exc_b.__context__ = exc_a  # circular
         assert _has_attribute_error_in_chain(exc_a) is False
+
+
+class TestConvertTrailingSystemMessageToUser:
+    """Tests for ProxyBaseLLMRequestProcessing._convert_trailing_system_message_to_user."""
+
+    def test_converts_trailing_system_message_to_user(self):
+        data = {
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "text": "<total_tokens>14981151 tokens left</total_tokens>",
+                            "type": "text",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                },
+            ]
+        }
+        ProxyBaseLLMRequestProcessing._convert_trailing_system_message_to_user(data)
+        assert data["messages"][-1]["role"] == "user"
+        assert data["messages"][0]["role"] == "user"
+
+    def test_does_not_modify_when_last_message_is_not_system(self):
+        data = {
+            "messages": [
+                {"role": "system", "content": "you are helpful"},
+                {"role": "user", "content": "hello"},
+            ]
+        }
+        ProxyBaseLLMRequestProcessing._convert_trailing_system_message_to_user(data)
+        assert data["messages"][0]["role"] == "system"
+        assert data["messages"][-1]["role"] == "user"
+
+    def test_noop_on_empty_or_missing_messages(self):
+        data = {"messages": []}
+        ProxyBaseLLMRequestProcessing._convert_trailing_system_message_to_user(data)
+        assert data["messages"] == []
+
+        data = {}
+        ProxyBaseLLMRequestProcessing._convert_trailing_system_message_to_user(data)
+        assert "messages" not in data
+
+    def test_noop_when_last_message_not_dict(self):
+        data = {"messages": ["not-a-dict"]}
+        ProxyBaseLLMRequestProcessing._convert_trailing_system_message_to_user(data)
+        assert data["messages"] == ["not-a-dict"]
